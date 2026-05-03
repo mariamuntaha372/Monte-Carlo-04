@@ -1,0 +1,171 @@
+%% HW4 - Problem 2: Portfolio Risk
+% FIM/MA 548, Spring '26
+%
+% Setup:
+%   - Trader buys 1 call option C(0,S0)
+%   - Short-sells Delta0 = dC/dS(0,S0) units of S  (delta hedge)
+%   - Invests delta_cash = Delta0*S0 - C(0,S0) in risk-free asset
+%   - Position is NOT rebalanced until maturity
+%
+% Portfolio value: V(t,S) = C(t,S) - Delta0*S + delta_cash*exp(r*t)
+%
+% At t=0: V(0,S0) = C0 - Delta0*S0 + delta_cash = 0  (self-financing)
+%
+% For i=1,2:  Zi = V(T/i, S_{T/i}) - V(0,S0) = V(T/i, S_{T/i})
+%
+% C(T/i, S_{T/i}) - C(0,S0) is approximated via:
+%   (a) Linear model:    dC ≈ Delta0 * dS
+%   (b) Quadratic model: dC ≈ Delta0 * dS + 0.5 * Gamma0 * dS^2
+%   (c) Exact:           dC = C(t, ST) - C0   (Black-Scholes formula)
+%
+% Then Zi = dC - Delta0*dS + delta_cash*(exp(r*t) - 1)
+%   Linear:    Delta0*dS terms cancel → Zi = delta_cash*(exp(r*t)-1)  [deterministic]
+%   Quadratic: Zi = 0.5*Gamma0*dS^2 + delta_cash*(exp(r*t)-1)
+%   Exact:     Zi = C(t,ST) - Delta0*ST + delta_cash*exp(r*t)  [since V0=0]
+
+clear; clc; close all;
+
+%% ── Parameters ───────────────────────────────────────────────────────────────
+S0    = 100;      % initial stock price
+K     = 100;      % strike (at-the-money)
+r     = 0.05;     % risk-free rate (risk-neutral world, used for pricing)
+mu    = 0.10;     % drift (physical world, used for simulation only)
+sigma = 0.4;      % volatility
+T     = 1;        % maturity
+M     = 100000;   % number of Monte Carlo paths
+alpha = 0.05;     % confidence level for VaR and ES
+
+%% ── Black-Scholes helper functions (risk-neutral pricing) ────────────────────
+d1    = @(t,S) (log(S./K) + (r + 0.5*sigma^2).*(T-t)) ./ (sigma.*sqrt(T-t));
+d2    = @(t,S) d1(t,S) - sigma.*sqrt(T-t);
+
+% Call price C(t,S)
+C     = @(t,S) S.*normcdf(d1(t,S)) - K.*exp(-r.*(T-t)).*normcdf(d2(t,S));
+
+% Delta = dC/dS
+Delta = @(t,S) normcdf(d1(t,S));
+
+% Gamma = d2C/dS2
+Gamma = @(t,S) normpdf(d1(t,S)) ./ (S .* sigma .* sqrt(T-t));
+
+%% ── Initial portfolio setup ──────────────────────────────────────────────────
+C0         = C(0, S0);          % call price at t=0
+Delta0     = Delta(0, S0);      % delta at t=0
+Gamma0     = Gamma(0, S0);      % gamma at t=0
+delta_cash = Delta0*S0 - C0;   % cash invested in risk-free asset
+
+% Verify V(0,S0) = 0  (self-financing portfolio)
+V0 = C0 - Delta0*S0 + delta_cash;   % should be exactly 0
+fprintf('V(0,S0)    = %.6f  (should be 0)\n', V0);
+fprintf('C(0,S0)    = %.4f\n', C0);
+fprintf('Delta0     = %.4f\n', Delta0);
+fprintf('Gamma0     = %.6f\n', Gamma0);
+fprintf('delta_cash = %.4f\n\n', delta_cash);
+
+%% ── Monte Carlo loop over i = 1, 2 ──────────────────────────────────────────
+model_names = {'Linear', 'Quadratic', 'Exact'};
+colors      = {'#2196F3', '#FF5722', '#4CAF50'};   % blue, orange, green
+
+for i = 1:2
+
+    t = T / i;   % evaluation time: T (i=1) or T/2 (i=2)
+
+    fprintf('============================================================\n');
+    fprintf('  i = %d  →  t = T/%d = %.2f\n', i, i, t);
+    fprintf('============================================================\n');
+
+    %% ── Simulate stock under the PHYSICAL measure ────────────────────────
+    % S_t = S0 * exp((mu - 0.5*sigma^2)*t + sigma*sqrt(t)*Z),  Z~N(0,1)
+    Z  = randn(M, 1);
+    ST = S0 .* exp((mu - 0.5*sigma^2)*t + sigma*sqrt(t).*Z);
+
+    % Change in stock price
+    dS = ST - S0;
+
+    %% ── (a) Linear model ─────────────────────────────────────────────────
+    % dC ≈ Delta0 * dS
+    % Zi = dC - Delta0*dS + delta_cash*(exp(r*t)-1)
+    %    = Delta0*dS - Delta0*dS + delta_cash*(exp(r*t)-1)
+    %    = delta_cash * (exp(r*t) - 1)    ← deterministic (constant)
+    dC_linear = Delta0 .* dS;
+    Z_linear  = dC_linear - Delta0.*dS + delta_cash*(exp(r*t) - 1);
+
+    %% ── (b) Quadratic model ──────────────────────────────────────────────
+    % dC ≈ Delta0*dS + 0.5*Gamma0*dS^2
+    % Zi = 0.5*Gamma0*dS^2 + delta_cash*(exp(r*t)-1)
+    dC_quad = Delta0.*dS + 0.5*Gamma0.*(dS.^2);
+    Z_quad  = dC_quad - Delta0.*dS + delta_cash*(exp(r*t) - 1);
+
+    %% ── (c) Exact distribution ───────────────────────────────────────────
+    % Full Black-Scholes revaluation at time t
+    % V(t,ST) = C(t,ST) - Delta0*ST + delta_cash*exp(r*t)
+    % Zi = V(t,ST) - V0 = V(t,ST)   since V0 = 0
+    Ct      = C(t, ST);
+    Z_exact = Ct - Delta0.*ST + delta_cash.*exp(r*t);
+
+    %% ── Store all three models ───────────────────────────────────────────
+    models = {Z_linear, Z_quad, Z_exact};
+
+    %% ── Plot empirical CDF ───────────────────────────────────────────────
+    figure('Name', sprintf('CDF — Z_%d  (t = %.2f)', i, t), ...
+           'Position', [100+300*(i-1), 100, 700, 500]);
+
+    hold on;
+    for j = 1:3
+        cdfplot(models{j});
+    end
+    hold off;
+
+    % Style the lines
+    lines = findobj(gca, 'Type', 'Line');
+    set(lines(1), 'Color', colors{3}, 'LineWidth', 1.8);
+    set(lines(2), 'Color', colors{2}, 'LineWidth', 1.8);
+    set(lines(3), 'Color', colors{1}, 'LineWidth', 1.8);
+
+    legend(model_names, 'Location', 'best', 'FontSize', 11);
+    xlabel('Z_i  (Portfolio P&L)', 'FontSize', 12);
+    ylabel('CDF', 'FontSize', 12);
+    title(sprintf('Empirical CDF of Z_%d  (t = T/%d = %.2f)', i, i, t), ...
+          'FontSize', 13, 'FontWeight', 'bold');
+    grid on;
+
+    %% ── Risk measures ────────────────────────────────────────────────────
+    for j = 1:3
+        Zm = models{j};
+
+        % Expected Loss (negative of expected P&L)
+        EL  = -mean(Zm);
+
+        % Value-at-Risk at level alpha
+        % VaR = -quantile(Zi, alpha)  (positive = loss, negative = gain)
+        q   = quantile(Zm, alpha);
+        VaR = -q;
+
+        % Expected Shortfall (CVaR) at level alpha
+        % ES = -E[Zi | Zi <= q]
+        ES  = -mean(Zm(Zm <= q));
+
+        fprintf('%s Model:\n', model_names{j});
+        fprintf('  Expected Loss E[-Z]              = %8.4f\n', EL);
+        fprintf('  VaR_%.2f (+ = loss, - = gain)  = %8.4f\n', alpha, VaR);
+        fprintf('  ES_%.2f  (+ = loss, - = gain)  = %8.4f\n', alpha, ES);
+
+        %% Bootstrap CI for VaR — only computed for Exact model
+        if j == 3
+            B        = 300;
+            n        = length(Zm);
+            VaR_boot = zeros(B, 1);
+            for b = 1:B
+                sample      = Zm(randi(n, n, 1));
+                VaR_boot(b) = -quantile(sample, alpha);
+            end
+            CI = quantile(VaR_boot, [0.025 0.975]);
+            fprintf('  VaR 95%% Bootstrap CI             = [%8.4f, %8.4f]\n', CI(1), CI(2));
+            fprintf('  CI width                         = %8.4f\n', CI(2) - CI(1));
+        end
+
+        fprintf('\n');
+    end
+end
+
+fprintf('Done.\n');
