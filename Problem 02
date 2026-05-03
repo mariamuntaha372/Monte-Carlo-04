@@ -168,4 +168,3 @@ for i = 1:2
     end
 end
 
-fprintf('Done.\n');
