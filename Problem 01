@@ -1,1 +1,128 @@
+%% Problem 1
+
+%% 1.1
+
+clear; clc;
+
+% Parameters
+S0 = 100; K = 100; r = 0.05; sigma = 0.4; T = 1;
+N = 1000; M = 20000;  % These values were shrunk because I kept running into memory issues.
+dt = T/N;
+
+% Simulate paths
+S = zeros(M, N+1);
+S(:,1) = S0;
+
+for t = 1:N
+    Z = randn(M,1);
+    S(:,t+1) = S(:,t).*exp((r - 0.5*sigma^2)*dt + sigma*sqrt(dt).*Z);
+end
+
+time = linspace(0,T,N+1);
+
+% Discounted payoff
+G = exp(-r*time) .* max(K - S, 0);
+
+%% Martingale (a): discounted stock (CENTERED)
+M1 = exp(-r*time) .* S;
+M1_centered = M1 - S0;   % <-- CRITICAL FIX
+
+dual1 = max(G - M1_centered, [], 2);
+V1 = mean(dual1);
+
+%% Martingale (b): European put price process (CENTERED)
+M2 = zeros(size(S));
+
+% Compute initial European price (M2_0)
+d1_0 = (log(S0/K) + (r + 0.5*sigma^2)*T) / (sigma*sqrt(T));
+d2_0 = d1_0 - sigma*sqrt(T);
+P0 = K*exp(-r*T)*normcdf(-d2_0) - S0*normcdf(-d1_0);
+
+for t = 1:N+1
+    tau = T - time(t);
+    if tau > 0
+        d1 = (log(S(:,t)/K) + (r + 0.5*sigma^2)*tau) ./ (sigma*sqrt(tau));
+        d2 = d1 - sigma*sqrt(tau);
+        P = K*exp(-r*tau).*normcdf(-d2) - S(:,t).*normcdf(-d1);
+    else
+        P = max(K - S(:,t), 0);
+    end
+    M2(:,t) = exp(-r*time(t)) .* P;
+end
+
+M2_centered = M2 - P0;   % <-- CRITICAL FIX
+
+dual2 = max(G - M2_centered, [], 2);
+V2 = mean(dual2);
+
+fprintf('Upper bound (a): %.4f\n', V1);
+fprintf('Upper bound (b): %.4f\n', V2);
+
+%% 1.2
+
+V0 = V2;
+
+tau_idx1 = zeros(M,1);
+tau_idx2 = zeros(M,1);
+
+for i = 1:M
+    % Martingale (a)
+    idx = find(V0 + M1_centered(i,:) <= G(i,:), 1);
+    if isempty(idx)
+        tau_idx1(i) = N+1;
+    else
+        tau_idx1(i) = idx;
+    end
+
+    % Martingale (b)
+    idx = find(V0 + M2_centered(i,:) <= G(i,:), 1);
+    if isempty(idx)
+        tau_idx2(i) = N+1;
+    else
+        tau_idx2(i) = idx;
+    end
+end
+
+% Compute expectations
+G_tau1 = G(sub2ind(size(G),(1:M)',tau_idx1));
+G_tau2 = G(sub2ind(size(G),(1:M)',tau_idx2));
+
+E1 = mean(G_tau1);
+E2 = mean(G_tau2);
+
+fprintf('Interval (a): [%.4f, %.4f]\n', E1, V0);
+fprintf('Interval (b): [%.4f, %.4f]\n', E2, V0);
+
+%% 1.3
+
+cashflow = max(K - S(:,end), 0);
+exercise_time = ones(M,1)*(N+1);
+
+for t = N:-1:2
+    itm = find(S(:,t) < K);
+
+    if isempty(itm)
+        continue;
+    end
+
+    X = S(itm,t);
+    Y = cashflow(itm) .* exp(-r*(exercise_time(itm)-t)*dt);
+
+    % Basis functions
+    A = [ones(size(X)), X, X.^2];
+    beta = A\Y;
+
+    continuation = A*beta;
+    exercise = max(K - X, 0);
+
+    ex_idx = itm(exercise > continuation);
+
+    cashflow(ex_idx) = exercise(exercise > continuation);
+    exercise_time(ex_idx) = t;
+end
+
+V_LSMC = mean(cashflow .* exp(-r*(exercise_time-1)*dt));
+
+fprintf('LSMC Price: %.4f\n', V_LSMC);
+
 
